@@ -74,15 +74,9 @@ def extract_artworks(container: ContainerAdapter, overlap_query: dict[str, Any])
         for ref in refs if type(refs) is list else [refs]:
             if 'head' in ref:
                 head = ref['head']
-                if 'lang' in head and 'text' in head:
-                    lang = head['lang']
-                    text = head['text']
-                    logger.trace(f"adding[{lang}]={text} (type I)")
+                for lang, text in head.items():
+                    logger.trace(f"adding[{lang}]={text}")
                     artworks[lang].add(text)
-                else:
-                    for lang, text in head.items():
-                        logger.trace(f"adding[{lang}]={text} (type II)")
-                        artworks[lang].add(text)
             else:
                 logger.warning(f"missing 'head' in {ref}")
 
@@ -170,9 +164,9 @@ def index_views(
         top_tier_anno_search: SearchResultAdapter = SearchResultAdapter(container, query)
 
         for anno in top_tier_anno_search.items():
-            doc_id = anno.path("body.id")
-
             logger.trace("anno: {}", anno)
+
+            doc_id = anno.path("body.id")
 
             target = anno.first_target_with_selector("NormalText")
             selector = target["selector"]
