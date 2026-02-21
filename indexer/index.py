@@ -7,6 +7,7 @@ from typing import Any, Optional
 import requests
 import yaml
 import argparse
+import json
 from annorepo.client import AnnoRepoClient, ContainerAdapter
 from elasticsearch import ApiError, Elasticsearch
 from loguru import logger
@@ -32,13 +33,11 @@ def reset_index(
 
     mapping_path = Path(path)
     logger.trace("Creating ES index {} using mapping file: {}", index_name, mapping_path)
+    mapping_body = json.loads(mapping_path.read_text(encoding="utf-8"))
     try:
         res = elastic.indices.create(
             index=index_name,
-            body=mapping_path.read_text(encoding="utf-8"),
-            request_timeout=60,
-            retry_on_timeout=True,
-            max_retries=3
+            body=mapping_body,
         )
     except ApiError as err:
         logger.critical(err)
@@ -290,6 +289,8 @@ def main(
         cfg_path: Optional[str] = None,
         show_progress: bool = False,
         log_file_path: Optional[str] = None,
+        request_timeout: int = 30,
+        max_retries: int = 1
 ) -> None:
     if not show_progress:
         logger.remove()
@@ -310,7 +311,7 @@ def main(
     container = annorepo.container_adapter(ar_container)
     logger.info("AnnoRepo: {about}", about=annorepo.get_about())
 
-    elastic = Elasticsearch(es_host)
+    elastic = Elasticsearch(es_host, request_timeout=request_timeout, retry_on_timeout=True if max_retries > 1 else False, max_retries=max_retries)
     logger.info("ElasticSearch: {info}", info=elastic.info())
 
     mapping_path = conf["mapping"] if 'mapping' in conf else MAPPING_FILE
@@ -370,6 +371,20 @@ def cli():
         action="store_true",
         help="Be more verbose",  # rename to '--verbose' ?
     )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        required=False,
+        default=30,
+        help="Request timeout"
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        required=False,
+        default=3,
+        help="Max retries when connection fails"
+    )
     args = parser.parse_args()
 
     if args.trace:
@@ -383,7 +398,10 @@ def cli():
         args.elastic_host,
         args.elastic_index,
         args.config,
-        args.progress
+        args.progress,
+        None,
+        args.request_timeout,
+        args.max_retries
     )
 
 if __name__ == "__main__":
