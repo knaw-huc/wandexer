@@ -35,7 +35,10 @@ def reset_index(
     try:
         res = elastic.indices.create(
             index=index_name,
-            body=mapping_path.read_text(encoding="utf-8")
+            body=mapping_path.read_text(encoding="utf-8"),
+            request_timeout=60,
+            retry_on_timeout=True,
+            max_retries=3
         )
     except ApiError as err:
         logger.critical(err)
