@@ -11,6 +11,7 @@ import json
 from annorepo.client import AnnoRepoClient, ContainerAdapter
 from elasticsearch import ApiError, Elasticsearch
 from loguru import logger
+from time import sleep
 
 from indexer.SearchResultItem import SearchResultItem
 from .SearchResultAdapter import SearchResultAdapter
@@ -30,6 +31,14 @@ def reset_index(
         except ApiError as err:
             logger.critical(err)
             return False
+
+    timeout = 0
+    while elastic.indices.exists(index=index_name):
+        logger.trace("Waiting until index {} is really gone", index_name)
+        timeout += 2
+        if timeout >= 60:
+            return False
+        sleep(2)
 
     mapping_path = Path(path)
     logger.trace("Creating ES index {} using mapping file: {}", index_name, mapping_path)
