@@ -37,6 +37,7 @@ def reset_index(
         logger.trace("Waiting until index {} is really gone", index_name)
         timeout += 2
         if timeout >= 60:
+            logger.critical("Index persists despite deletion")
             return False
         sleep(2)
 
