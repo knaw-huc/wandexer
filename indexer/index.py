@@ -289,8 +289,8 @@ def main(
         cfg_path: Optional[str] = None,
         show_progress: bool = False,
         log_file_path: Optional[str] = None,
-        request_timeout: int = 30,
-        max_retries: int = 1
+        request_timeout: int = 60,
+        max_retries: int = 0
 ) -> None:
     if not show_progress:
         logger.remove()
@@ -311,7 +311,7 @@ def main(
     container = annorepo.container_adapter(ar_container)
     logger.info("AnnoRepo: {about}", about=annorepo.get_about())
 
-    elastic = Elasticsearch(es_host, request_timeout=request_timeout, retry_on_timeout=True if max_retries > 1 else False, max_retries=max_retries)
+    elastic = Elasticsearch(es_host, request_timeout=request_timeout, retry_on_timeout=True if max_retries > 0 else False, max_retries=max_retries)
     logger.info("ElasticSearch: {info}", info=elastic.info())
 
     mapping_path = conf["mapping"] if 'mapping' in conf else MAPPING_FILE
@@ -375,14 +375,14 @@ def cli():
         "--request-timeout",
         type=int,
         required=False,
-        default=30,
+        default=60,
         help="Request timeout"
     )
     parser.add_argument(
         "--max-retries",
         type=int,
         required=False,
-        default=3,
+        default=0,
         help="Max retries when connection fails"
     )
     args = parser.parse_args()
