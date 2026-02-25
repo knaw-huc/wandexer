@@ -1,1 +1,1 @@
-Indexer for Preview Edit ENvironment
+Indexer for W3C Web Annotations as produced by AnnoRepo
