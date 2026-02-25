@@ -7,9 +7,11 @@ from typing import Any, Optional
 import requests
 import yaml
 import argparse
+import json
 from annorepo.client import AnnoRepoClient, ContainerAdapter
 from elasticsearch import ApiError, Elasticsearch
 from loguru import logger
+from time import sleep
 
 from indexer.SearchResultItem import SearchResultItem
 from .SearchResultAdapter import SearchResultAdapter
@@ -20,71 +22,75 @@ CONFIG_DEFAULT = f"{os.path.dirname(__file__)}/config.yml"
 
 def reset_index(
         elastic: Elasticsearch, index_name: str, path: str | os.PathLike
-) -> int:
+) -> bool:
     if elastic.indices.exists(index=index_name):
-        logger.trace("Deleting ES index {index_name}", index_name=index_name)
+        logger.trace("Deleting previously existing ES index {}", index_name)
         try:
             res = elastic.indices.delete(index=index_name)
             logger.success("Deleted ES index {}: {}", index_name, res)
         except ApiError as err:
             logger.critical(err)
-            return -1
+            return False
+
+    timeout = 0
+    while elastic.indices.exists(index=index_name):
+        logger.trace("Waiting until index {} is really gone", index_name)
+        timeout += 2
+        if timeout >= 60:
+            logger.critical("Index persists despite deletion")
+            return False
+        sleep(2)
 
     mapping_path = Path(path)
-    logger.trace(
-        "Creating ES index {} using mapping file: {}", index_name, mapping_path
-    )
+    logger.trace("Creating ES index {} using mapping file: {}", index_name, mapping_path)
+    mapping_body = json.loads(mapping_path.read_text(encoding="utf-8"))
     try:
         res = elastic.indices.create(
-            index=index_name, body=mapping_path.read_text(encoding="utf-8")
+            index=index_name,
+            body=mapping_body,
         )
-        logger.success("Created ES index {}: {}", index_name, res)
     except ApiError as err:
         logger.critical(err)
-        return -2
+        return False
 
-    return 0
+    logger.success("Created ES index {}: {}", index_name, res)
+    return True
 
 
 def store_document(
         elastic: Elasticsearch, index: str, doc_id: str, doc: dict[str, Any]
-) -> int:
+) -> bool:
     resp = elastic.index(index=index, id=doc_id, document=doc)
     logger.trace(resp)
     if resp["result"] == "created":
         logger.success("Indexed {}", doc_id)
-    else:
-        logger.critical("Indexing {} failed: {}", doc_id, resp)
-        return -1
+        return True
 
-    return 0
+    logger.critical("Indexing {} failed: {}", doc_id, resp)
+    return False
 
 
 def extract_artworks(container: ContainerAdapter, overlap_query: dict[str, Any]) -> dict[str, set[str]]:
     # fetch overlapping Rs[type=artwork] annotations
     query = overlap_query.copy()
     query.update({
-        "body.type": "tei:Rs",
-        "body.metadata.tei:type": "artwork"
+        "body.type": "Entity",
+        "body.tei:type": "artwork"
     })
     logger.trace("artworks query: {}", query)
 
     artworks = defaultdict(set)
     for anno in SearchResultAdapter(container, query).items():
         logger.trace("artwork_anno: {}", anno)
-        ref = anno.path("body.metadata.ref")
-        if type(ref) is list:
-            for ref in anno.path("body.metadata.ref"):
-                logger.trace("ref: {}", ref)
-                if 'head' in ref:
-                    head = ref['head']
-                    for lang, text in head.items():
-                        logger.trace(f"adding[{lang}]={text}")
-                        artworks[lang].add(text)
-                else:
-                    logger.warning(f"missing 'head' in {ref}")
-        else:
-            logger.warning("Missing proper 'ref' in {}: {}", anno, ref)
+        refs = anno.path("body.tei:ref")
+        for ref in refs if type(refs) is list else [refs]:
+            if 'head' in ref:
+                head = ref['head']
+                for lang, text in head.items():
+                    logger.trace(f"adding[{lang}]={text}")
+                    artworks[lang].add(text)
+            else:
+                logger.warning(f"missing 'head' in {ref}")
 
     return artworks
 
@@ -93,8 +99,8 @@ def extract_persons(container: ContainerAdapter, overlap_query: dict[str, Any]) 
     # construct query to fetch overlapping person annotations
     query = overlap_query.copy()
     query.update({
-        "body.type": "tei:Rs",
-        "body.metadata.tei:type": "person"
+        "body.type": "Entity",
+        "body.tei:type": "person"
     })
     logger.trace("persons query: {}", query)
 
@@ -102,7 +108,8 @@ def extract_persons(container: ContainerAdapter, overlap_query: dict[str, Any]) 
     for anno in SearchResultAdapter(container, query).items():
         anno_id = anno.path("body.id")
         logger.trace("person_anno: {}", anno)
-        for ref in anno.path("body.metadata.ref"):
+        refs = anno.path("body.tei:ref")
+        for ref in refs if type(refs) is list else [refs]:
             name = extract_name(anno_id, ref)
             if not name:
                 name = f'unknown: {ref}'
@@ -124,9 +131,9 @@ def extract_name(anno_id: str, ref: dict[str, Any]) -> str|None:
 
 
 def contrive_date(anno: SearchResultItem) -> dict[Any, Any] | None:
-    actual = anno.path("body.metadata.dateSent")
-    not_before = anno.path("body.metadata.dateSentNotBefore")
-    not_after = anno.path("body.metadata.dateSentNotAfter")
+    actual = anno.path("body.dateSent")
+    not_before = anno.path("body.dateSentNotBefore")
+    not_after = anno.path("body.dateSentNotAfter")
 
     date = {}
     if actual:
@@ -151,9 +158,10 @@ def index_views(
         elastic: Elasticsearch,
         index: str,
         docs,
+        modules: list[str],
         fields: dict[str, str],
         views: dict[str, str],
-) -> int:
+) -> bool:
     logger.trace("docs: {}", docs)
     for doc_def in docs:
         doc_type = doc_def["type"]
@@ -172,7 +180,7 @@ def index_views(
 
             doc_id = anno.path("body.id")
 
-            target = anno.first_target_with_selector("Text")
+            target = anno.first_target_with_selector("NormalText")
             selector = target["selector"]
             overlap_base_query = {
                 ":overlapsWithTextAnchorRange": {
@@ -182,81 +190,105 @@ def index_views(
                 },
             }
 
-            doc = {"type": doc_type, 'dateSortable': "9999", 'date': {"gte": "0001", "lte": "9999"}}
+            doc = {}
 
-            # store dateSent, if any
-            date = contrive_date(anno)
-            if date:
-                logger.info("setting ES doc date to: {}", date)
-                doc['date'] = date
-                if 'gte' in date:
-                    doc['dateSortable'] = date['gte']
-                elif 'lte' in date:
-                    doc['dateSortable'] = date['lte']
-            else:
-                logger.warning("{}: no dateSent, winging it to {}, [sortable: {}]",
-                               doc_id, doc['date'], doc['dateSortable'])
+            if 'type' in modules:
+                doc['type'] = doc_type
 
-            logger.info("{}: date: {}, dateSort: {}", doc_id, doc['date'], doc['dateSortable'])
-
-            # store title by language
-            title_by_lang = anno.path("body.metadata.title")
-            if title_by_lang:
-                for lang in title_by_lang.keys():
-                    lang_key = f"title{lang.upper()}"
-                    doc[lang_key] = title_by_lang[lang]
-
-            # store generic fields by path in anno
-            for es_field, path in fields.items():
-                v = anno.path(path)
-                if v:
-                    doc[es_field] = v
-
-            # store artworks
-            artworks = extract_artworks(container, overlap_base_query)
-            logger.trace(" - artworks: {}", artworks)
-            for lang in artworks.keys():
-                lang_key = f"artworks{lang.upper()}"
-                doc[lang_key] = sorted(artworks[lang])
-
-            # store persons
-            persons = extract_persons(container, overlap_base_query)
-            logger.trace(" - persons: {}", persons)
-            doc['persons'] = sorted(persons)
-
-            # store views
-            for view in views:
-                view_name = f"{view["name"]}Text"
-
-                overlap_query = overlap_base_query.copy()
-                for constraint in view["constraints"]:
-                    overlap_query[constraint["path"]] = {":isIn": constraint["values"]}
-                logger.trace(" - overlap query: {}", overlap_query)
-
-                overlap_search: SearchResultAdapter = SearchResultAdapter(container, overlap_query)
-
-                view_texts = []
-                for overlap_anno in overlap_search.items():
-                    logger.trace(" - overlap_anno: {}", overlap_anno)
-                    text_target = overlap_anno.first_target_without_selector("LogicalText")
-
-                    resp = requests.get(text_target["source"], timeout=5)
-                    if resp.status_code != 200:
-                        logger.warning("Failed to get text for {}: {}", overlap_anno.path("body.id"), resp)
-                    else:
-                        view_texts.append("".join(resp.json()))
-                        logger.trace(f" - {view_name}={view_texts}")
-
-                if view_texts:
-                    doc[view_name] = view_texts
+            if 'date' in modules:
+                doc['dateSortable'] = "9999"
+                doc['date'] = {"gte": "0001", "lte": "9999"}
+                date = contrive_date(anno)
+                if date:
+                    logger.info("setting ES doc date to: {}", date)
+                    doc['date'] = date
+                    if 'gte' in date:
+                        doc['dateSortable'] = date['gte']
+                    elif 'lte' in date:
+                        doc['dateSortable'] = date['lte']
                 else:
-                    logger.warning(f"Empty '{view["name"]}' view")
+                    logger.warning("{}: no dateSent, winging it to {}, [sortable: {}]",
+                                   doc_id, doc['date'], doc['dateSortable'])
+
+                logger.info("{}: date: {}, dateSort: {}", doc_id, doc['date'], doc['dateSortable'])
+
+            if 'title' in modules:
+                # store title by language
+                title_by_lang = anno.path('body.titles')
+                if title_by_lang:
+                    for lang in title_by_lang.keys():
+                        lang_key = f"title{lang.upper()}"
+                        doc[lang_key] = title_by_lang[lang]
+
+            if 'fields' in modules:
+                # store generic fields by path in anno
+                for es_field, path in fields.items():
+                    v = anno.path(path)
+                    if v:
+                        doc[es_field] = v
+
+            if 'artworks' in modules:
+                # store artworks
+                artworks = extract_artworks(container, overlap_base_query)
+                logger.trace(" - artworks: {}", artworks)
+                for lang in artworks.keys():
+                    lang_key = f"artworks{lang.upper()}"
+                    doc[lang_key] = sorted(artworks[lang])
+
+            if 'persons' in modules:
+                # store persons
+                persons = extract_persons(container, overlap_base_query)
+                logger.trace(" - persons: {}", persons)
+                doc['persons'] = sorted(persons)
+
+            if 'views' in modules:
+                # store views
+                for view in views:
+                    view_name = f"{view["name"]}Text"
+
+                    view_texts = None
+                    if 'constraints' in view:
+                        overlap_query = overlap_base_query.copy()
+                        for constraint in view["constraints"]:
+                            overlap_query[constraint["path"]] = {":isIn": constraint["values"]}
+                        logger.trace(" - overlap query: {}", overlap_query)
+
+                        overlap_search: SearchResultAdapter = SearchResultAdapter(container, overlap_query)
+
+                        view_texts = []
+                        for overlap_anno in overlap_search.items():
+                            logger.trace(" - overlap_anno: {}", overlap_anno)
+                            text_target = overlap_anno.first_target_without_selector("NormalText")
+
+                            resp = requests.get(text_target["source"], timeout=5)
+                            if resp.status_code != 200:
+                                logger.warning("Failed to get text for {}: {}",
+                                               overlap_anno.path("body.id"),
+                                               resp)
+                            else:
+                                view_texts.append(resp.text)
+                                logger.trace(f" - {view_name}={view_texts}")
+                    else:
+                        text_target = anno.first_target_without_selector('NormalText')
+                        logger.trace("text_target: {}", text_target)
+                        logger.trace("source: {}", text_target['source'])
+                        resp = requests.get(text_target['source'], timeout=5)
+                        if resp.status_code != 200:
+                            logger.warning("Failed to get text for {}: {}", doc_id, resp)
+                        else:
+                            view_texts = resp.text
+                            logger.trace(f" - {view_name}={view_texts}")
+
+                    if view_texts:
+                        doc[view_name] = view_texts
+                    else:
+                        logger.warning(f"Empty '{view["name"]}' view")
 
             logger.debug(" - es_doc[{}]: {}", doc_id, doc)
-            if store_document(elastic, index, doc_id, doc) < 0:
-                return -3
+            if  not store_document(elastic, index, doc_id, doc):
+                return False
 
-    return 0
+    return True
 
 
 def main(
@@ -264,10 +296,12 @@ def main(
         ar_container: str,
         es_host: str,
         es_index: str,
-        cfg_path=None,
+        cfg_path: Optional[str] = None,
         show_progress: bool = False,
         log_file_path: Optional[str] = None,
-) -> int:
+        request_timeout: int = 60,
+        max_retries: int = 0
+) -> None:
     if not show_progress:
         logger.remove()
         logger.add(sys.stdout, level="WARNING")
@@ -287,28 +321,31 @@ def main(
     container = annorepo.container_adapter(ar_container)
     logger.info("AnnoRepo: {about}", about=annorepo.get_about())
 
-    elastic = Elasticsearch(es_host)
+    elastic = Elasticsearch(es_host, request_timeout=request_timeout, retry_on_timeout=True if max_retries > 0 else False, max_retries=max_retries)
     logger.info("ElasticSearch: {info}", info=elastic.info())
 
-    es_result = reset_index(elastic, es_index, MAPPING_FILE)
-    if es_result != 0:
-        return es_result
+    mapping_path = conf["mapping"] if 'mapping' in conf else MAPPING_FILE
 
-    return index_views(
-        container,
-        elastic,
-        es_index,
-        docs=conf["docs"],
-        fields=conf["fields"],
-        views=conf["views"],
-    )
+    if reset_index(elastic, es_index, mapping_path):
+        index_views(
+            container,
+            elastic,
+            es_index,
+            docs=conf["docs"],
+            modules=conf["modules"],
+            fields=conf["fields"],
+            views=conf["views"],
+        )
+
 
 def cli():
     parser = argparse.ArgumentParser(
         description="index annorepo container to elastic index"
     )
     parser.add_argument(
-        "--annorepo-host",  required=True, help="the AnnoRepo host"
+        "--annorepo-host",
+        required=True,
+        help="the AnnoRepo host name"
     )
     parser.add_argument(
         "--annorepo-container",
@@ -342,7 +379,21 @@ def cli():
         "--progress",
         required=False,
         action="store_true",
-        help="Show progress bar",
+        help="Be more verbose",  # rename to '--verbose' ?
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        required=False,
+        default=60,
+        help="Request timeout"
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        required=False,
+        default=0,
+        help="Max retries when connection fails"
     )
     args = parser.parse_args()
 
@@ -351,13 +402,16 @@ def cli():
         logger.add(sys.stderr, level="TRACE")
         logger.trace("TRACE ENABLED")
 
-    status = main(
+    main(
         args.annorepo_host,
         args.annorepo_container,
         args.elastic_host,
         args.elastic_index,
         args.config,
-        args.progress
+        args.progress,
+        None,
+        args.request_timeout,
+        args.max_retries
     )
 
 if __name__ == "__main__":
