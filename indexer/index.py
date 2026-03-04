@@ -53,6 +53,14 @@ def reset_index(
         logger.critical(err)
         return False
 
+    logger.trace("Checking cluster health and waiting if needed")
+
+    elastic.cluster.health(
+        index=index_name,
+        wait_for_active_shards=1,
+        timeout="120s"
+    )
+
     logger.success("Created ES index {}: {}", index_name, res)
     return True
 
