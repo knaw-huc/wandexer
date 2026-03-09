@@ -313,7 +313,7 @@ def main(
         log_file_path: Optional[str] = None,
         request_timeout: int = 60,
         max_retries: int = 0
-) -> bool:
+):
     if not show_progress:
         logger.remove()
         logger.add(sys.stdout, level="WARNING")
@@ -339,7 +339,7 @@ def main(
     mapping_path = conf["mapping"] if 'mapping' in conf else MAPPING_FILE
 
     if reset_index(elastic, es_index, mapping_path):
-        index_views(
+        if index_views(
             container,
             elastic,
             es_index,
@@ -347,13 +347,15 @@ def main(
             modules=conf["modules"],
             fields=conf["fields"],
             views=conf["views"],
-        )
-        return True
+        ):
+            sys.exit(0)
+        else:
+            sys.exit(1)
     else:
-        return False
+        sys.exit(1)
 
 
-def cli() -> bool:
+def cli():
     parser = argparse.ArgumentParser(
         description="index annorepo container to elastic index"
     )
@@ -417,7 +419,7 @@ def cli() -> bool:
         logger.add(sys.stderr, level="TRACE")
         logger.trace("TRACE ENABLED")
 
-    return main(
+    main(
         args.annorepo_host,
         args.annorepo_container,
         args.elastic_host,
@@ -430,7 +432,4 @@ def cli() -> bool:
     )
 
 if __name__ == "__main__":
-    if cli():
-        sys.exit(0)
-    else:
-        sys.exit(1)
+    cli()
