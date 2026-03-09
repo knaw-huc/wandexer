@@ -55,11 +55,15 @@ def reset_index(
 
     logger.trace("Checking cluster health and waiting if needed")
 
-    elastic.cluster.health(
-        index=index_name,
-        wait_for_active_shards=1,
-        timeout="120s"
-    )
+    try:
+        elastic.cluster.health(
+            index=index_name,
+            wait_for_active_shards=1,
+            timeout="600s"
+        )
+    except elastic.TimeoutError:
+        logger.error("Timed out while waiting for cluster health (waited for 1 active shard)")
+        return False
 
     logger.success("Created ES index {}: {}", index_name, res)
     return True
@@ -309,7 +313,7 @@ def main(
         log_file_path: Optional[str] = None,
         request_timeout: int = 60,
         max_retries: int = 0
-) -> None:
+) -> bool:
     if not show_progress:
         logger.remove()
         logger.add(sys.stdout, level="WARNING")
@@ -344,9 +348,12 @@ def main(
             fields=conf["fields"],
             views=conf["views"],
         )
+        return True
+    else:
+        return False
 
 
-def cli():
+def cli() -> bool:
     parser = argparse.ArgumentParser(
         description="index annorepo container to elastic index"
     )
@@ -410,7 +417,7 @@ def cli():
         logger.add(sys.stderr, level="TRACE")
         logger.trace("TRACE ENABLED")
 
-    main(
+    return main(
         args.annorepo_host,
         args.annorepo_container,
         args.elastic_host,
@@ -423,4 +430,7 @@ def cli():
     )
 
 if __name__ == "__main__":
-    cli()
+    if cli():
+        sys.exit(0)
+    else:
+        sys.exit(1)
