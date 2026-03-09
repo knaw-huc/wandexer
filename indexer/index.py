@@ -61,8 +61,8 @@ def reset_index(
             wait_for_active_shards=1,
             timeout="600s"
         )
-    except elastic.TimeoutError:
-        logger.error("Timed out while waiting for cluster health (waited for 1 active shard)")
+    except Exception as e:
+        logger.error("Timed out while waiting for cluster health (waited for 1 active shard): " + str(e))
         return False
 
     logger.success("Created ES index {}: {}", index_name, res)
