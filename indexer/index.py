@@ -97,9 +97,12 @@ def extract_artworks(
     artworks = defaultdict(set)
     for anno in SearchResultAdapter(container, query).items():
         logger.trace("artwork_anno: {}", anno)
-        artwork_ids.add(anno.path("body.tei:ref.id"))
         refs = anno.path("body.tei:ref")
         for ref in refs if type(refs) is list else [refs]:
+            if 'id' in ref:
+                artwork_ids.add(ref['id'])
+            else:
+                logger.warning(f"missing 'id' in {ref}")
             if 'head' in ref:
                 head = ref['head']
                 for lang, text in head.items():
@@ -247,7 +250,8 @@ def index_views(
                 # store artworks
                 artwork_ids, artworks = extract_artworks(container, overlap_base_query)
                 logger.trace(" - artwork_ids: {}", artwork_ids)
-                doc['artworkIds'] = sorted(artwork_ids)
+                if artwork_ids:
+                    doc['artworkIds'] = sorted(artwork_ids)
                 logger.trace(" - artworks: {}", artworks)
                 for lang in artworks.keys():
                     lang_key = f"artworks{lang.upper()}"
