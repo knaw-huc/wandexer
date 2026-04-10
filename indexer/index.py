@@ -82,7 +82,9 @@ def store_document(
     return False
 
 
-def extract_artworks(container: ContainerAdapter, overlap_query: dict[str, Any]) -> dict[str, set[str]]:
+def extract_artworks(
+        container: ContainerAdapter, overlap_query: dict[str, Any]
+) -> (set[str], dict[str, set[str]]):
     # fetch overlapping Rs[type=artwork] annotations
     query = overlap_query.copy()
     query.update({
@@ -91,9 +93,11 @@ def extract_artworks(container: ContainerAdapter, overlap_query: dict[str, Any])
     })
     logger.trace("artworks query: {}", query)
 
+    artwork_ids = set()
     artworks = defaultdict(set)
     for anno in SearchResultAdapter(container, query).items():
         logger.trace("artwork_anno: {}", anno)
+        artwork_ids.add(anno.path("body.tei:ref.id"))
         refs = anno.path("body.tei:ref")
         for ref in refs if type(refs) is list else [refs]:
             if 'head' in ref:
@@ -104,7 +108,7 @@ def extract_artworks(container: ContainerAdapter, overlap_query: dict[str, Any])
             else:
                 logger.warning(f"missing 'head' in {ref}")
 
-    return artworks
+    return artwork_ids, artworks
 
 
 def extract_persons(container: ContainerAdapter, overlap_query: dict[str, Any]) -> set[str]:
@@ -241,7 +245,9 @@ def index_views(
 
             if 'artworks' in modules:
                 # store artworks
-                artworks = extract_artworks(container, overlap_base_query)
+                artwork_ids, artworks = extract_artworks(container, overlap_base_query)
+                logger.trace(" - artwork_ids: {}", artwork_ids)
+                doc['artworkIds'] = sorted(artwork_ids)
                 logger.trace(" - artworks: {}", artworks)
                 for lang in artworks.keys():
                     lang_key = f"artworks{lang.upper()}"
