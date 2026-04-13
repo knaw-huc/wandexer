@@ -103,13 +103,17 @@ def extract_artworks(
                 artwork_ids.add(ref['id'])
             else:
                 logger.warning(f"missing 'id' in {ref}")
-            if 'head' in ref:
-                head = ref['head']
-                for lang, text in head.items():
-                    logger.trace(f"adding[{lang}]={text}")
-                    artworks[lang].add(text)
+            if 'label' in ref:
+                label = ref['label']
+                for lang, labels in label.items():
+                    if 'search' in labels:
+                        text = labels['search']
+                        logger.trace(f"adding[{lang}]={text}")
+                        artworks[lang].add(text)
+                    else:
+                        logger.warning(f"missing 'search' (for lang '{lang}') in {ref}")
             else:
-                logger.warning(f"missing 'head' in {ref}")
+                logger.warning(f"missing 'label' in {ref}")
 
     return artwork_ids, artworks
 
