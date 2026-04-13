@@ -223,7 +223,6 @@ def index_views(
                 doc['date'] = {"gte": "0001", "lte": "9999"}
                 date = contrive_date(anno)
                 if date:
-                    logger.info("setting ES doc date to: {}", date)
                     doc['date'] = date
                     if 'gte' in date:
                         doc['dateSortable'] = date['gte']
@@ -232,8 +231,6 @@ def index_views(
                 else:
                     logger.warning("{}: no dateSent, winging it to {}, [sortable: {}]",
                                    doc_id, doc['date'], doc['dateSortable'])
-
-                logger.info("{}: date: {}, dateSort: {}", doc_id, doc['date'], doc['dateSortable'])
 
             if 'title' in modules:
                 # store title by language
@@ -308,9 +305,9 @@ def index_views(
                     if view_texts:
                         doc[view_name] = view_texts
                     else:
-                        logger.warning(f"Empty '{view["name"]}' view")
+                        logger.trace(f"Empty '{view["name"]}' view")
 
-            logger.debug(" - es_doc[{}]: {}", doc_id, doc)
+            logger.trace(" - es_doc[{}]: {}", doc_id, doc)
             if  not store_document(elastic, index, doc_id, doc):
                 return False
 
