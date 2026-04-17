@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdlib.h>
+#include <wchar.h>
+#include <locale.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <json-c/json.h>
@@ -212,6 +215,79 @@ index_person(json *anno)
     }
 }
 
+static void
+extract_text(str type, str source, int start, int end)
+{
+    char *filename = NULL;
+
+    str name = strrchr(source, '/') + 1;
+    if (asprintf(&filename, "/Users/jong/ops/van-gogh/data/textsurf/vangogh/%s.txt", name) != -1) {
+        FILE *fp = fopen(filename, "r");
+
+        if (fp) {
+            int num_codepoints = end - start + 1;
+            char *buf = alloca(4 * num_codepoints);
+            if (buf) {
+                char *p = buf;
+                long todo = start;
+                while (todo-- > 0)
+                    if (fgetwc(fp) == WEOF)
+                        break;
+
+                todo = end - start;
+                p = buf;
+                while (todo-- > 0) {
+                    wint_t wc = fgetwc(fp);
+                    if (wc == WEOF)
+                        break;
+                    else {
+                        char mb[MB_CUR_MAX];
+                        int nr = wcrtomb(mb, (wchar_t)wc, NULL);
+                        if (nr > 0) {
+                            for (int i = 0; i < nr; i++)
+                                *p++ = mb[i];
+                        }
+                    }
+                }
+                *p++ = '\0';
+                json_object_object_add(_index_doc, type, json_object_new_string(buf));
+            }
+            fclose(fp);
+        }
+    }
+
+    if (filename)
+        free(filename);
+}
+
+static void
+store_text(json *anno, str text_type)
+{
+    json *targets;
+
+    if (json_object_object_get_ex(anno, "target", &targets)
+            && json_object_get_type(targets) == json_type_array) {
+        int nitems = json_object_array_length(targets);
+        for (int i = 0; i < nitems; i++) {
+            json *target = json_object_array_get_idx(targets, i);
+            str type;
+            if ((type = find_str(target, "type")) && !strcmp(type, "NormalText")) {
+                json *source, *selector, *start, *end;
+                if (json_object_object_get_ex(target, "source", &source)
+                        && json_object_object_get_ex(target, "selector", &selector)
+                        && json_object_object_get_ex(selector, "start", &start)
+                        && json_object_object_get_ex(selector, "end", &end)
+                        ) {
+                    str text_source = json_object_get_string(source);
+                    int32_t start_val = json_object_get_int(start);
+                    int32_t end_val = json_object_get_int(end);
+                    extract_text(text_type, text_source, start_val, end_val);
+                }
+            }
+        }
+    }
+}
+
 static int
 cmp_json_by_strval(const void *a, const void *b)
 {
@@ -237,12 +313,14 @@ main(int argc, char *argv[])
         return 1;
     }
 
+    setlocale(LC_ALL, "en_US.UTF-8");
+
     _index_doc = json_object_new_object();
 
     fd = open(argv[1], O_RDONLY);
     fstat(fd, &st);
     size = st.st_size;
-    printf("%s, size=%lld\n", argv[1], size);
+    fprintf(stderr, "indexing \"%s\", size=%lld\n", argv[1], size);
 
     line = file = (char *) mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
     line_num = 1;
@@ -275,6 +353,25 @@ main(int argc, char *argv[])
                             index_person(root);
                     }
                 }
+                else if (!strcmp(body_type, "Division")) {
+                    str tei_type = find_str(root, "body.tei:type");
+                    if (tei_type) {
+                        if (!strcmp(tei_type, "original"))
+                            store_text(root, "letterOriginalText");
+                        else if (!strcmp(tei_type, "translation"))
+                            store_text(root, "letterTranslatedText");
+                        else if (!strcmp(tei_type, "about"))
+                            store_text(root, "introText");
+                    }
+                }
+                else if (!strcmp(body_type, "Note")) {
+                    str sub_type = find_str(root, "body.subtype");
+                    if (sub_type
+                            && (!strcmp(sub_type, "notes")
+                                || !strcmp(sub_type, "typednotes")
+                                || !strcmp(sub_type, "langnotes")))
+                        store_text(root, "letterNotesText");
+                }
                 else
                     skipped++;
             }
@@ -298,7 +395,7 @@ main(int argc, char *argv[])
 
     str idx_txt = json_object_to_json_string_ext(_index_doc,
             JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE);
-    fprintf(stderr, "%s\n", idx_txt);
+    puts(idx_txt);
 
     return 0;
 }
