@@ -326,6 +326,7 @@ main(int argc, char *argv[])
                         }
                     }
                     break;
+
                 case 'E':
                     if (!strcmp(body_type, "Entity")) {
                         const char *tei_type = find_str(anno, "body.tei:type");
@@ -337,12 +338,14 @@ main(int argc, char *argv[])
                         }
                     }
                     break;
+
                 case 'L':
                     if (!strcmp(body_type, "Letter")) {
                         add_str("type", "letter");
                         index_anno(anno);
                     }
                     break;
+
                 case 'N':
                     if (!strcmp(body_type, "Note")) {
                         const char *sub_type = find_str(anno, "body.subtype");
@@ -353,8 +356,9 @@ main(int argc, char *argv[])
                             store_text(anno, "letterNotesText");
                     }
                     break;
+
+                // ignore
                 default:
-                    // ignore
                     break;
             }
         }
