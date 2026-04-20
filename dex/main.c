@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <wchar.h>
 #include <locale.h>
 #include <sys/stat.h>
@@ -218,15 +219,21 @@ index_person(json *anno)
 static void
 extract_text(str type, str source, int start, int end)
 {
-    char *filename = NULL;
+    json *texts;
+    if (!json_object_object_get_ex(_index_doc, type, &texts)) {
+        texts = json_object_new_array();
+        json_object_object_add(_index_doc, type, texts);
+    }
 
+    json *text = NULL;
     str name = strrchr(source, '/') + 1;
-    if (asprintf(&filename, "/Users/jong/ops/van-gogh/data/textsurf/vangogh/%s.txt", name) != -1) {
+    char *filename = NULL;
+    if (asprintf(&filename, "%s.txt", name) != -1) {
         FILE *fp = fopen(filename, "r");
 
         if (fp) {
             int num_codepoints = end - start + 1;
-            char *buf = alloca(4 * num_codepoints);
+            char *buf = alloca(MB_CUR_MAX * num_codepoints);
             if (buf) {
                 char *p = buf;
                 long todo = start;
@@ -250,14 +257,22 @@ extract_text(str type, str source, int start, int end)
                     }
                 }
                 *p++ = '\0';
-                json_object_object_add(_index_doc, type, json_object_new_string(buf));
+                text = json_object_new_string(buf);
             }
             fclose(fp);
         }
-    }
 
-    if (filename)
+        if (!text) {
+            char errmsg[BUFSIZ];
+            snprintf(errmsg, BUFSIZ, "%s[%d..%d]: %s", filename, start, end, strerror(errno));
+            perror(errmsg);
+            text = json_object_new_string(errmsg);
+        }
+
+        json_object_array_add(texts, text);
+
         free(filename);
+    }
 }
 
 static void
