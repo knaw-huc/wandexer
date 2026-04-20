@@ -94,53 +94,30 @@ index_anno(json *anno)
 }
 
 static void
-add_artwork_id(str id)
+add_unique(str key, str candidate)
 {
-    json *ids;
+    json *items;
 
-    // setup array if we don't have it yet
-    if (!json_object_object_get_ex(_index_doc, "artworkIds", &ids)) {
-        ids = json_object_new_array();
-        json_object_object_add(_index_doc, "artworkIds", ids);
+    // 1. Get or create the items
+    if (!json_object_object_get_ex(_index_doc, key, &items)) {
+        items = json_object_new_array();
+        json_object_object_add(_index_doc, key, items);
     }
 
-    // only add artwork_id if it isn't already in our list
-    int nitems = json_object_array_length(ids);
+    // 2. Check if the candidate already exists
+    int nitems = json_object_array_length(items);
     int exists = 0;
     for (int i = 0; i < nitems; i++) {
-        json *item = json_object_array_get_idx(ids, i);
-        if (!strcmp(json_object_get_string(item), id)) {
+        json *item = json_object_array_get_idx(items, i);
+        if (!strcmp(json_object_get_string(item), candidate)) {
             exists = 1;
             break;
         }
     }
 
+    // 3. Add the new string if it's unique
     if (!exists)
-        json_object_array_add(ids, json_object_new_string(id));
-}
-
-static void
-add_artwork_label(str label)
-{
-    json *labels;
-
-    if (!json_object_object_get_ex(_index_doc, "artworksEN", &labels)) {
-        labels = json_object_new_array();
-        json_object_object_add(_index_doc, "artworksEN", labels);
-    }
-
-    int nitems = json_object_array_length(labels);
-    int exists = 0;
-    for (int i = 0; i < nitems; i++) {
-        json *item = json_object_array_get_idx(labels, i);
-        if (!strcmp(json_object_get_string(item), label)) {
-            exists = 1;
-            break;
-        }
-    }
-
-    if (!exists)
-        json_object_array_add(labels, json_object_new_string(label));
+        json_object_array_add(items, json_object_new_string(candidate));
 }
 
 static void
@@ -152,35 +129,11 @@ index_artwork(json *anno)
         json *res;
 
         if ((res = find_by_path(ref, "id")))
-            add_artwork_id(json_object_get_string(res));
+            add_unique("artworkIds", json_object_get_string(res));
 
         if ((res = find_by_path(ref, "label.en.search")))
-            add_artwork_label(json_object_get_string(res));
+            add_unique("artworksEN", json_object_get_string(res));
     }
-}
-
-static void
-add_person(str label)
-{
-    json *labels;
-
-    if (!json_object_object_get_ex(_index_doc, "persons", &labels)) {
-        labels = json_object_new_array();
-        json_object_object_add(_index_doc, "persons", labels);
-    }
-
-    int nitems = json_object_array_length(labels);
-    int exists = 0;
-    for (int i = 0; i < nitems; i++) {
-        json *item = json_object_array_get_idx(labels, i);
-        if (!strcmp(json_object_get_string(item), label)) {
-            exists = 1;
-            break;
-        }
-    }
-
-    if (!exists)
-        json_object_array_add(labels, json_object_new_string(label));
 }
 
 static inline void
@@ -189,10 +142,10 @@ index_person_ref(json *ref, str anno_id)
     json *res;
 
     if ((res = find_by_path(ref, "sortLabel")))
-        add_person(json_object_get_string(res));
+        add_unique("persons", json_object_get_string(res));
     else if ((res = find_by_path(ref, "displayLabel"))) {
         fprintf(stderr, "Using 'displayLabel' in lieu of 'sortLabel' in %s\n", anno_id);
-        add_person(json_object_get_string(res));
+        add_unique("persons", json_object_get_string(res));
     }
     else
         fprintf(stderr, "Missing 'sortLabel' and 'displayLabel' in %s\n", anno_id);
@@ -216,31 +169,29 @@ index_person(json *anno)
     }
 }
 
-static void
+static json *
 extract_text(str type, str source, int start, int end)
 {
-    json *texts;
-    if (!json_object_object_get_ex(_index_doc, type, &texts)) {
-        texts = json_object_new_array();
-        json_object_object_add(_index_doc, type, texts);
-    }
-
     json *text = NULL;
-    str name = strrchr(source, '/') + 1;
-    char *filename = NULL;
-    if (asprintf(&filename, "%s.txt", name) != -1) {
-        FILE *fp = fopen(filename, "r");
 
+    str basename = strrchr(source, '/') + 1;
+    char *filename;
+    if (asprintf(&filename, "%s.txt", basename) != -1) {
+        FILE *fp = fopen(filename, "r");
         if (fp) {
-            int num_codepoints = end - start + 1;
-            char *buf = alloca(MB_CUR_MAX * num_codepoints);
+            int num_codepoints = end - start;
+            int worst_case_size = MB_CUR_MAX * num_codepoints + 1; // +1 for '\0'
+            char *buf = malloc(worst_case_size);
             if (buf) {
                 char *p = buf;
+
+                // first, skip to 'start'
                 long todo = start;
                 while (todo-- > 0)
                     if (fgetwc(fp) == WEOF)
                         break;
 
+                // then, copy till 'end'
                 todo = end - start;
                 p = buf;
                 while (todo-- > 0) {
@@ -256,8 +207,9 @@ extract_text(str type, str source, int start, int end)
                         }
                     }
                 }
-                *p++ = '\0';
-                text = json_object_new_string(buf);
+                *p = '\0';
+                text = json_object_new_string_len(buf, p - buf);
+                free(buf);
             }
             fclose(fp);
         }
@@ -269,17 +221,22 @@ extract_text(str type, str source, int start, int end)
             text = json_object_new_string(errmsg);
         }
 
-        json_object_array_add(texts, text);
-
         free(filename);
     }
+
+    return text;
 }
 
 static void
 store_text(json *anno, str text_type)
 {
-    json *targets;
+    json *texts;
+    if (!json_object_object_get_ex(_index_doc, text_type, &texts)) {
+        texts = json_object_new_array();
+        json_object_object_add(_index_doc, text_type, texts);
+    }
 
+    json *targets;
     if (json_object_object_get_ex(anno, "target", &targets)
             && json_object_get_type(targets) == json_type_array) {
         int nitems = json_object_array_length(targets);
@@ -291,12 +248,14 @@ store_text(json *anno, str text_type)
                 if (json_object_object_get_ex(target, "source", &source)
                         && json_object_object_get_ex(target, "selector", &selector)
                         && json_object_object_get_ex(selector, "start", &start)
-                        && json_object_object_get_ex(selector, "end", &end)
-                        ) {
-                    str text_source = json_object_get_string(source);
-                    int32_t start_val = json_object_get_int(start);
-                    int32_t end_val = json_object_get_int(end);
-                    extract_text(text_type, text_source, start_val, end_val);
+                        && json_object_object_get_ex(selector, "end", &end))
+                {
+                    json_object_array_add(texts,
+                            extract_text(
+                                text_type,
+                                json_object_get_string(source),
+                                json_object_get_int(start),
+                                json_object_get_int(end)));
                 }
             }
         }
