@@ -9,18 +9,20 @@
 #include <sys/mman.h>
 #include <json-c/json.h>
 
-typedef const char *str;
-typedef struct json_object json;
+#define NELEMS(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-static json *_index_doc;
+typedef struct json_object json_t;
 
-static json *
-find_by_path(json *obj, str path)
+// global indexing document root
+static json_t *_root;
+
+static json_t *
+find_by_path(json_t *obj, const char *path)
 {
     char *path_copy = strdup(path);
     char *token = strtok(path_copy, ".");
-    json *current = obj;
-    json *next = NULL;
+    json_t *current = obj;
+    json_t *next = NULL;
 
     while (token != NULL) {
         if (json_object_object_get_ex(current, token, &next)) {
@@ -36,25 +38,25 @@ find_by_path(json *obj, str path)
     return current;
 }
 
-static str
-find_str(json *obj, str path)
+static const char *
+find_str(json_t *obj, const char *path)
 {
-    json *match = find_by_path(obj, path);
+    json_t *match = find_by_path(obj, path);
     return match ? json_object_get_string(match) : NULL;
 }
 
 static void
-add_str(str key, str val)
+add_str(const char *key, const char *val)
 {
-    json_object_object_add(_index_doc, key, json_object_new_string(val));
+    json_object_object_add(_root, key, json_object_new_string(val));
 }
 
 static inline
-void index_fields(json *anno)
+void index_fields(json_t *anno)
 {
     static struct {
-        str key;
-        str path;
+        const char *key;
+        const char *path;
     } fields[] = {
         { "recipient",      "body.recipient" },
         { "file",           "body.n" },
@@ -65,20 +67,19 @@ void index_fields(json *anno)
         { "correspondent",  "body.participant" },
         { "period",         "body.namedPeriod" },
     };
-
-    int nelems = sizeof(fields) / sizeof(fields[0]);
+    static int nelems = NELEMS(fields);
 
     for (int i = 0; i < nelems; i++) {
-        json *p;
+        json_t *p;
         if ((p = find_by_path(anno, fields[i].path))) {
-            json *ref = json_object_get(p);
-            json_object_object_add(_index_doc, fields[i].key, ref);
+            json_t *ref = json_object_get(p);
+            json_object_object_add(_root, fields[i].key, ref);
         }
     }
 }
 
 static inline
-void index_id(json *anno)
+void index_id(json_t *anno)
 {
     const char *p;
 
@@ -87,28 +88,28 @@ void index_id(json *anno)
 }
 
 static void
-index_anno(json *anno)
+index_anno(json_t *anno)
 {
     index_id(anno);
     index_fields(anno);
 }
 
 static void
-add_unique(str key, str candidate)
+add_unique(const char *key, const char *candidate)
 {
-    json *items;
+    json_t *items;
 
     // 1. Get or create the items
-    if (!json_object_object_get_ex(_index_doc, key, &items)) {
+    if (!json_object_object_get_ex(_root, key, &items)) {
         items = json_object_new_array();
-        json_object_object_add(_index_doc, key, items);
+        json_object_object_add(_root, key, items);
     }
 
     // 2. Check if the candidate already exists
     int nitems = json_object_array_length(items);
     int exists = 0;
     for (int i = 0; i < nitems; i++) {
-        json *item = json_object_array_get_idx(items, i);
+        json_t *item = json_object_array_get_idx(items, i);
         if (!strcmp(json_object_get_string(item), candidate)) {
             exists = 1;
             break;
@@ -121,12 +122,12 @@ add_unique(str key, str candidate)
 }
 
 static void
-index_artwork(json *anno)
+index_artwork(json_t *anno)
 {
-    json *ref;
+    json_t *ref;
 
     if ((ref = find_by_path(anno, "body.tei:ref"))) {
-        json *res;
+        json_t *res;
 
         if ((res = find_by_path(ref, "id")))
             add_unique("artworkIds", json_object_get_string(res));
@@ -137,9 +138,9 @@ index_artwork(json *anno)
 }
 
 static inline void
-index_person_ref(json *ref, str anno_id)
+index_person_ref(json_t *ref, const char *anno_id)
 {
-    json *res;
+    json_t *res;
 
     if ((res = find_by_path(ref, "sortLabel")))
         add_unique("persons", json_object_get_string(res));
@@ -152,12 +153,12 @@ index_person_ref(json *ref, str anno_id)
 }
 
 static void
-index_person(json *anno)
+index_person(json_t *anno)
 {
-    json *ref;
+    json_t *ref;
 
     if ((ref = find_by_path(anno, "body.tei:ref"))) {
-        str anno_id = find_str(anno, "body.id");
+        const char *anno_id = find_str(anno, "body.id");
 
         if (json_object_get_type(ref) == json_type_array) {
             int nitems = json_object_array_length(ref);
@@ -169,12 +170,12 @@ index_person(json *anno)
     }
 }
 
-static json *
-extract_text(str type, str source, int start, int end)
+static json_t *
+extract_text(const char *type, const char *source, int start, int end)
 {
-    json *text = NULL;
+    json_t *text = NULL;
 
-    str basename = strrchr(source, '/') + 1;
+    const char *basename = strrchr(source, '/') + 1;
     char *filename;
     if (asprintf(&filename, "%s.txt", basename) != -1) {
         FILE *fp = fopen(filename, "r");
@@ -228,23 +229,23 @@ extract_text(str type, str source, int start, int end)
 }
 
 static void
-store_text(json *anno, str text_type)
+store_text(json_t *anno, const char *text_type)
 {
-    json *texts;
-    if (!json_object_object_get_ex(_index_doc, text_type, &texts)) {
+    json_t *texts;
+    if (!json_object_object_get_ex(_root, text_type, &texts)) {
         texts = json_object_new_array();
-        json_object_object_add(_index_doc, text_type, texts);
+        json_object_object_add(_root, text_type, texts);
     }
 
-    json *targets;
+    json_t *targets;
     if (json_object_object_get_ex(anno, "target", &targets)
             && json_object_get_type(targets) == json_type_array) {
         int nitems = json_object_array_length(targets);
         for (int i = 0; i < nitems; i++) {
-            json *target = json_object_array_get_idx(targets, i);
-            str type;
+            json_t *target = json_object_array_get_idx(targets, i);
+            const char *type;
             if ((type = find_str(target, "type")) && !strcmp(type, "NormalText")) {
-                json *source, *selector, *start, *end;
+                json_t *source, *selector, *start, *end;
                 if (json_object_object_get_ex(target, "source", &source)
                         && json_object_object_get_ex(target, "selector", &selector)
                         && json_object_object_get_ex(selector, "start", &start)
@@ -265,8 +266,8 @@ store_text(json *anno, str text_type)
 static int
 cmp_json_by_strval(const void *a, const void *b)
 {
-    json *const *obj1 = (json *const *)a;
-    json *const *obj2 = (json *const *)b;
+    json_t *const *obj1 = (json_t *const *)a;
+    json_t *const *obj2 = (json_t *const *)b;
 
     const char *id1 = json_object_get_string(*obj1);
     const char *id2 = json_object_get_string(*obj2);
@@ -277,94 +278,110 @@ cmp_json_by_strval(const void *a, const void *b)
 int
 main(int argc, char *argv[])
 {
-    int fd, line_num;
-    off_t size;
-    struct stat st;
-    char *file, *line;
+    FILE *fp;
 
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <file>\n", argv[0]);
         return 1;
     }
 
+    // setup locale for unicode reading
     setlocale(LC_ALL, "en_US.UTF-8");
 
-    _index_doc = json_object_new_object();
+    // allocate global (static) indexing doc
+    _root = json_object_new_object();
 
-    fd = open(argv[1], O_RDONLY);
-    fstat(fd, &st);
-    size = st.st_size;
-    fprintf(stderr, "indexing \"%s\", size=%lld\n", argv[1], size);
-
-    line = file = (char *) mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
-    line_num = 1;
-    for (off_t i = 0; i < size; i++) {
-        if (file[i] == '\n') {
-            file[i] = '\0';
-            json *root = json_tokener_parse(line);
-            if (!root) {
-                fprintf(stderr, "Error parsing JSON on line %d\n", line_num);
-                continue;
-            }
-
-            str body_type = find_str(root, "body.type");
-            if (body_type) {
-                if (!strcmp(body_type, "Letter")) {
-                    add_str("type", "letter");
-                    index_anno(root);
-                }
-                else if (!strcmp(body_type, "Document")) {
-                    add_str("type", "intro");
-                    index_anno(root);
-                }
-                else if (!strcmp(body_type, "Entity")) {
-                    str tei_type = find_str(root, "body.tei:type");
-                    if (tei_type) {
-                        if (!strcmp(tei_type, "artwork"))
-                            index_artwork(root);
-                        else if (!strcmp(tei_type, "person"))
-                            index_person(root);
-                    }
-                }
-                else if (!strcmp(body_type, "Division")) {
-                    str tei_type = find_str(root, "body.tei:type");
-                    if (tei_type) {
-                        if (!strcmp(tei_type, "original"))
-                            store_text(root, "letterOriginalText");
-                        else if (!strcmp(tei_type, "translation"))
-                            store_text(root, "letterTranslatedText");
-                        else if (!strcmp(tei_type, "about"))
-                            store_text(root, "introText");
-                    }
-                }
-                else if (!strcmp(body_type, "Note")) {
-                    str sub_type = find_str(root, "body.subtype");
-                    if (sub_type
-                            && (!strcmp(sub_type, "notes")
-                                || !strcmp(sub_type, "typednotes")
-                                || !strcmp(sub_type, "langnotes")))
-                        store_text(root, "letterNotesText");
-                }
-            }
-
-            line = &file[i+1];
-            line_num++;
-
-            json_object_put(root);
-        }
+    if (!(fp = fopen(argv[1], "r"))) {
+        perror(argv[1]);
+        return 1;
     }
 
-    json *res;
-    if (json_object_object_get_ex(_index_doc, "artworkIds", &res))
-        json_object_array_sort(res, cmp_json_by_strval);
-    if (json_object_object_get_ex(_index_doc, "artworksEN", &res))
-        json_object_array_sort(res, cmp_json_by_strval);
-    if (json_object_object_get_ex(_index_doc, "persons", &res))
-        json_object_array_sort(res, cmp_json_by_strval);
+    char *line = NULL;
+    size_t linecap = 0;
+    for (int line_num = 1; getline(&line, &linecap, fp) != -1; line_num++) {
+        // each line in jsonld file is one web annotation
+        json_t *anno = json_tokener_parse(line);
+        if (!anno) {
+            fprintf(stderr, "Error parsing JSON on line %d\n", line_num);
+            continue;
+        }
 
-    str idx_txt = json_object_to_json_string_ext(_index_doc,
-            JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE);
-    puts(idx_txt);
+        const char *body_type = find_str(anno, "body.type");
+        if (body_type) {
+            switch (body_type[0]) {
+                case 'D':
+                    if (!strcmp(body_type, "Document")) {
+                        add_str("type", "intro");
+                        index_anno(anno);
+                    }
+                    else if (!strcmp(body_type, "Division")) {
+                        const char *tei_type = find_str(anno, "body.tei:type");
+                        if (tei_type) {
+                            if (!strcmp(tei_type, "original"))
+                                store_text(anno, "letterOriginalText");
+                            else if (!strcmp(tei_type, "translation"))
+                                store_text(anno, "letterTranslatedText");
+                            else if (!strcmp(tei_type, "about"))
+                                store_text(anno, "introText");
+                        }
+                    }
+                    break;
+                case 'E':
+                    if (!strcmp(body_type, "Entity")) {
+                        const char *tei_type = find_str(anno, "body.tei:type");
+                        if (tei_type) {
+                            if (!strcmp(tei_type, "artwork"))
+                                index_artwork(anno);
+                            else if (!strcmp(tei_type, "person"))
+                                index_person(anno);
+                        }
+                    }
+                    break;
+                case 'L':
+                    if (!strcmp(body_type, "Letter")) {
+                        add_str("type", "letter");
+                        index_anno(anno);
+                    }
+                    break;
+                case 'N':
+                    if (!strcmp(body_type, "Note")) {
+                        const char *sub_type = find_str(anno, "body.subtype");
+                        if (sub_type
+                                && (!strcmp(sub_type, "notes")
+                                    || !strcmp(sub_type, "typednotes")
+                                    || !strcmp(sub_type, "langnotes")))
+                            store_text(anno, "letterNotesText");
+                    }
+                    break;
+                default:
+                    // ignore
+                    break;
+            }
+        }
+
+        // dereference/free this iteration's anno
+        json_object_put(anno);
+    }
+
+    // cleanup technically not needed as we're about to exit, but oh well.
+    free(line);
+    linecap = 0;
+
+    const char *sortable_fields[] = {
+        "artworkIds",
+        "artworksEN",
+        "persons"
+    };
+    int nelems = NELEMS(sortable_fields);
+    for (int i = 0; i < nelems; i++) {
+        json_t *arr;
+        if (json_object_object_get_ex(_root, sortable_fields[i], &arr))
+            json_object_array_sort(arr, cmp_json_by_strval);
+    }
+
+    puts(json_object_to_json_string_ext(
+                _root,
+                JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_NOSLASHESCAPE));
 
     return 0;
 }
