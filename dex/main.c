@@ -318,7 +318,7 @@ cmp_json_by_strval(const void *a, const void *b)
 int
 main(int argc, char *argv[])
 {
-    int fd, line_num, skipped;
+    int fd, line_num;
     off_t size;
     struct stat st;
     char *file, *line;
@@ -339,7 +339,6 @@ main(int argc, char *argv[])
 
     line = file = (char *) mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
     line_num = 1;
-    skipped = 0;
     for (off_t i = 0; i < size; i++) {
         if (file[i] == '\n') {
             file[i] = '\0';
@@ -387,8 +386,6 @@ main(int argc, char *argv[])
                                 || !strcmp(sub_type, "langnotes")))
                         store_text(root, "letterNotesText");
                 }
-                else
-                    skipped++;
             }
 
             line = &file[i+1];
@@ -397,8 +394,6 @@ main(int argc, char *argv[])
             json_object_put(root);
         }
     }
-
-    fprintf(stderr, "Skipped %d out of %d lines\n", skipped, line_num - 1);
 
     json *res;
     if (json_object_object_get_ex(_index_doc, "artworkIds", &res))
