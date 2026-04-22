@@ -9,7 +9,7 @@
 #include <sys/mman.h>
 #include <json-c/json.h>
 
-#define NELEMS(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define NELEMS(arr) ((int)(sizeof(arr) / sizeof((arr)[0])))
 
 typedef struct json_object json_t;
 
@@ -67,9 +67,8 @@ void index_fields(json_t *anno)
         { "correspondent",  "body.participant" },
         { "period",         "body.namedPeriod" },
     };
-    static int nelems = NELEMS(fields);
 
-    for (int i = 0; i < nelems; i++) {
+    for (int i = 0; i < NELEMS(fields); i++) {
         json_t *p;
         if ((p = find_by_path(anno, fields[i].path))) {
             json_t *ref = json_object_get(p);
@@ -376,8 +375,8 @@ main(int argc, char *argv[])
         "artworksEN",
         "persons"
     };
-    int nelems = NELEMS(sortable_fields);
-    for (int i = 0; i < nelems; i++) {
+
+    for (int i = 0; i < NELEMS(sortable_fields); i++) {
         json_t *arr;
         if (json_object_object_get_ex(_root, sortable_fields[i], &arr))
             json_object_array_sort(arr, cmp_json_by_strval);
