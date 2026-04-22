@@ -38,73 +38,53 @@ find_by_path(json_t *obj, const char *path)
     return current;
 }
 
-static const char *
-find_str(json_t *obj, const char *path)
-{
-    json_t *match = find_by_path(obj, path);
-    return match ? json_object_get_string(match) : NULL;
-}
-
 static void
 add_str(const char *key, const char *val)
 {
     json_object_object_add(_root, key, json_object_new_string(val));
 }
 
-static inline
-void index_fields(json_t *anno)
+static void
+index_anno(json_t *body)
 {
     static struct {
         const char *key;
         const char *path;
     } fields[] = {
-        { "recipient",      "body.recipient" },
-        { "file",           "body.n" },
-        { "location",       "body.location" },
-        { "msId",           "body.identifier" },
-        { "sender",         "body.sender" },
-        { "title",          "body.title" },
-        { "correspondent",  "body.participant" },
-        { "period",         "body.namedPeriod" },
+        { "recipient",      "recipient" },
+        { "file",           "n" },
+        { "location",       "location" },
+        { "msId",           "identifier" },
+        { "sender",         "sender" },
+        { "title",          "title" },
+        { "correspondent",  "participant" },
+        { "period",         "namedPeriod" },
     };
 
+    json_t *id = json_object_object_get(body, "id");
+    if (id)
+        add_str("_id", json_object_get_string(id));
+
     for (int i = 0; i < NELEMS(fields); i++) {
-        json_t *p;
-        if ((p = find_by_path(anno, fields[i].path))) {
-            json_t *ref = json_object_get(p);
+        json_t *field = json_object_object_get(body, fields[i].path);
+        if (field) {
+            json_t *ref = json_object_get(field); // refcount++
             json_object_object_add(_root, fields[i].key, ref);
         }
     }
 }
 
-static inline
-void index_id(json_t *anno)
-{
-    const char *p;
-
-    if ((p = find_str(anno, "body.id")))
-        add_str("_id", p);
-}
-
-static void
-index_anno(json_t *anno)
-{
-    index_id(anno);
-    index_fields(anno);
-}
-
 static void
 add_unique(const char *key, const char *candidate)
 {
-    json_t *items;
-
-    // 1. Get or create the items
-    if (!json_object_object_get_ex(_root, key, &items)) {
+    // Get or create and add items array
+    json_t *items = json_object_object_get(_root, key);
+    if (!items) {
         items = json_object_new_array();
         json_object_object_add(_root, key, items);
     }
 
-    // 2. Check if the candidate already exists
+    // Check if the candidate already exists
     int nitems = json_object_array_length(items);
     int exists = 0;
     for (int i = 0; i < nitems; i++) {
@@ -115,20 +95,20 @@ add_unique(const char *key, const char *candidate)
         }
     }
 
-    // 3. Add the new string if it's unique
+    // Add candidate if we don't have it yet
     if (!exists)
         json_object_array_add(items, json_object_new_string(candidate));
 }
 
 static void
-index_artwork(json_t *anno)
+index_artwork(json_t *body)
 {
-    json_t *ref;
+    json_t *ref = json_object_object_get(body, "tei:ref");
 
-    if ((ref = find_by_path(anno, "body.tei:ref"))) {
+    if (ref) {
         json_t *res;
 
-        if ((res = find_by_path(ref, "id")))
+        if (json_object_object_get_ex(ref, "id", &res))
             add_unique("artworkIds", json_object_get_string(res));
 
         if ((res = find_by_path(ref, "label.en.search")))
@@ -139,29 +119,26 @@ index_artwork(json_t *anno)
 static inline void
 index_person_ref(json_t *ref, const char *anno_id)
 {
-    json_t *res;
+    json_t *label = json_object_object_get(ref, "sortLabel");
 
-    if ((res = find_by_path(ref, "sortLabel")))
-        add_unique("persons", json_object_get_string(res));
-    else if ((res = find_by_path(ref, "displayLabel"))) {
-        fprintf(stderr, "Using 'displayLabel' in lieu of 'sortLabel' in %s\n", anno_id);
-        add_unique("persons", json_object_get_string(res));
-    }
+    if (!label)
+        label = json_object_object_get(ref, "displayLabel");
+
+    if (label)
+        add_unique("persons", json_object_get_string(label));
     else
         fprintf(stderr, "Missing 'sortLabel' and 'displayLabel' in %s\n", anno_id);
 }
 
 static void
-index_person(json_t *anno)
+index_person(json_t *body, const char *anno_id)
 {
     json_t *ref;
 
-    if ((ref = find_by_path(anno, "body.tei:ref"))) {
-        const char *anno_id = find_str(anno, "body.id");
-
+    if (json_object_object_get_ex(body, "tei:ref", &ref)) {
         if (json_object_get_type(ref) == json_type_array) {
             int nitems = json_object_array_length(ref);
-            for (int i=0; i < nitems; i++)
+            for (int i = 0; i < nitems; i++)
                 index_person_ref(json_object_array_get_idx(ref, i), anno_id);
         }
         else
@@ -242,8 +219,9 @@ store_text(json_t *anno, const char *text_type)
         int nitems = json_object_array_length(targets);
         for (int i = 0; i < nitems; i++) {
             json_t *target = json_object_array_get_idx(targets, i);
-            const char *type;
-            if ((type = find_str(target, "type")) && !strcmp(type, "NormalText")) {
+            json_t *type;
+            if (json_object_object_get_ex(target, "type", &type)
+                    && !strcmp("NormalText", json_object_get_string(type))) {
                 json_t *source, *selector, *start, *end;
                 if (json_object_object_get_ex(target, "source", &source)
                         && json_object_object_get_ex(target, "selector", &selector)
@@ -305,22 +283,29 @@ main(int argc, char *argv[])
             continue;
         }
 
-        const char *body_type = find_str(anno, "body.type");
-        if (body_type) {
+        json_t *id, *body, *type;
+        if (json_object_object_get_ex(anno, "id", &id)
+                && json_object_object_get_ex(anno, "body", &body)
+                && json_object_object_get_ex(body, "type", &type)) {
+
+            const char *anno_id = json_object_get_string(id);
+            const char *body_type = json_object_get_string(type);
+
             switch (body_type[0]) {
                 case 'D':
                     if (!strcmp(body_type, "Document")) {
                         add_str("type", "intro");
-                        index_anno(anno);
+                        index_anno(body);
                     }
                     else if (!strcmp(body_type, "Division")) {
-                        const char *tei_type = find_str(anno, "body.tei:type");
+                        json_t *tei_type = json_object_object_get(body, "tei:type");
                         if (tei_type) {
-                            if (!strcmp(tei_type, "original"))
+                            const char *s = json_object_get_string(tei_type);
+                            if (!strcmp(s, "original"))
                                 store_text(anno, "letterOriginalText");
-                            else if (!strcmp(tei_type, "translation"))
+                            else if (!strcmp(s, "translation"))
                                 store_text(anno, "letterTranslatedText");
-                            else if (!strcmp(tei_type, "about"))
+                            else if (!strcmp(s, "about"))
                                 store_text(anno, "introText");
                         }
                     }
@@ -328,12 +313,13 @@ main(int argc, char *argv[])
 
                 case 'E':
                     if (!strcmp(body_type, "Entity")) {
-                        const char *tei_type = find_str(anno, "body.tei:type");
+                        json_t *tei_type = json_object_object_get(body, "tei:type");
                         if (tei_type) {
-                            if (!strcmp(tei_type, "artwork"))
-                                index_artwork(anno);
-                            else if (!strcmp(tei_type, "person"))
-                                index_person(anno);
+                            const char *s = json_object_get_string(tei_type);
+                            if (!strcmp(s, "artwork"))
+                                index_artwork(body);
+                            else if (!strcmp(s, "person"))
+                                index_person(body, anno_id);
                         }
                     }
                     break;
@@ -341,23 +327,25 @@ main(int argc, char *argv[])
                 case 'L':
                     if (!strcmp(body_type, "Letter")) {
                         add_str("type", "letter");
-                        index_anno(anno);
+                        index_anno(body);
                     }
                     break;
 
                 case 'N':
                     if (!strcmp(body_type, "Note")) {
-                        const char *sub_type = find_str(anno, "body.subtype");
-                        if (sub_type
-                                && (!strcmp(sub_type, "notes")
-                                    || !strcmp(sub_type, "typednotes")
-                                    || !strcmp(sub_type, "langnotes")))
-                            store_text(anno, "letterNotesText");
+                        json_t *subtype = json_object_object_get(body, "subtype");
+                        if (subtype) {
+                            const char *s = json_object_get_string(subtype);
+                            if (!strcmp(s, "notes")
+                                    || !strcmp(s, "typednotes")
+                                    || !strcmp(s, "langnotes"))
+                                store_text(anno, "letterNotesText");
+                        }
                     }
                     break;
 
-                // ignore
                 default:
+                    // ignore
                     break;
             }
         }
