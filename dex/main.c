@@ -255,8 +255,6 @@ cmp_json_by_strval(const void *a, const void *b)
 int
 main(int argc, char *argv[])
 {
-    FILE *fp;
-
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <file>\n", argv[0]);
         return 1;
@@ -265,13 +263,14 @@ main(int argc, char *argv[])
     // setup locale for unicode reading
     setlocale(LC_ALL, "en_US.UTF-8");
 
-    // allocate global (static) indexing doc
-    _root = json_object_new_object();
-
-    if (!(fp = fopen(argv[1], "r"))) {
+    FILE *fp = fopen(argv[1], "r");
+    if (!fp) {
         perror(argv[1]);
         return 1;
     }
+
+    // allocate global (static) indexing doc
+    _root = json_object_new_object();
 
     char *line = NULL;
     size_t linecap = 0;
@@ -357,6 +356,7 @@ main(int argc, char *argv[])
     // cleanup technically not needed as we're about to exit, but oh well.
     free(line);
     linecap = 0;
+    fclose(fp);
 
     const char *sortable_fields[] = {
         "artworkIds",
