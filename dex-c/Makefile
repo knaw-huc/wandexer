@@ -1,4 +1,4 @@
-TARGET= a.out 
+TARGET= dex
 
 CC=     gcc
 DEBUG=  -g -DDEBUG
