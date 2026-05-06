@@ -44,6 +44,38 @@ add_str(const char *key, const char *val)
     json_object_object_add(_root, key, json_object_new_string(val));
 }
 
+static json_t *
+contrive_date(json_t *body)
+{
+    json_t *actual = json_object_object_get(body, "dateSent");
+    json_t *not_before = json_object_object_get(body, "dateSentNotBefore");
+    json_t *not_after = json_object_object_get(body, "dateSentNotAfter");
+
+    json_t *date = json_object_new_object();
+    if (actual) {
+        json_object_object_add(date, "gte", json_object_get(actual));
+        json_object_object_add(date, "lte", json_object_get(actual));
+        if (not_before)
+            fprintf(stderr, "%s: has both actual date AND notBefore!\n",
+                    json_object_get_string(json_object_object_get(body, "id")));
+        if (not_after)
+            fprintf(stderr, "%s: has both actual date AND notAfter!\n",
+                    json_object_get_string(json_object_object_get(body, "id")));
+    }
+    else {
+        if (not_before)
+            json_object_object_add(date, "gte", json_object_get(not_before));
+        if (not_after)
+            json_object_object_add(date, "lte", json_object_get(not_after));
+    }
+
+    if (json_object_object_length(date) > 0)
+        return date;
+
+    json_object_put(date);
+    return NULL;
+}
+
 static void
 index_anno(json_t *body)
 {
@@ -63,7 +95,7 @@ index_anno(json_t *body)
 
     json_t *id = json_object_object_get(body, "id");
     if (id)
-        add_str("_id", json_object_get_string(id));
+        add_str("id", json_object_get_string(id));
 
     for (int i = 0; i < NELEMS(fields); i++) {
         json_t *field = json_object_object_get(body, fields[i].path);
@@ -72,6 +104,28 @@ index_anno(json_t *body)
             json_object_object_add(_root, fields[i].key, ref);
         }
     }
+
+    json_t *date = contrive_date(body);
+    if (date) {
+        json_object_object_add(_root, "date", date);
+        json_t *gte = json_object_object_get(date, "gte");
+        json_t *lte = json_object_object_get(date, "lte");
+        if (gte)
+            json_object_object_add(_root, "dateSortable", json_object_get(gte));
+        else if (lte)
+            json_object_object_add(_root, "dateSortable", json_object_get(lte));
+    }
+    else {
+        json_t *wingit = json_object_new_object();
+        json_object_object_add(wingit, "gte", json_object_new_string("0001"));
+        json_object_object_add(wingit, "lte", json_object_new_string("9999"));
+        json_object_object_add(_root, "date", wingit);
+
+        json_object_object_add(_root, "dateSortable", json_object_new_string("9999"));
+
+        fprintf(stderr, "%s: no dateSent, winging it.\n", json_object_get_string(id));
+    }
+
 }
 
 static void
@@ -153,7 +207,7 @@ extract_text(const char *type, const char *source, int start, int end)
 
     const char *basename = strrchr(source, '/') + 1;
     char *filename;
-    if (asprintf(&filename, "%s.txt", basename) != -1) {
+    if (asprintf(&filename, "work/%s.txt", basename) != -1) {
         FILE *fp = fopen(filename, "r");
         if (fp) {
             int num_codepoints = end - start;
@@ -262,6 +316,8 @@ main(int argc, char *argv[])
 
     // setup locale for unicode reading
     setlocale(LC_ALL, "en_US.UTF-8");
+
+    //fprintf(stderr, "Indexing %s\n", argv[1]);
 
     FILE *fp = fopen(argv[1], "r");
     if (!fp) {
