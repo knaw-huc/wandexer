@@ -38,20 +38,39 @@ find_by_path(json_t *obj, const char *path)
     return current;
 }
 
-static void
+static inline int
+streq(const char *a, const char *b)
+{
+    return strcmp(a, b) == 0;
+}
+
+static inline void
+add_obj(const char *key, json_t *val)
+{
+    json_object_object_add(_root, key, val);
+}
+
+static inline void
 add_str(const char *key, const char *val)
 {
-    json_object_object_add(_root, key, json_object_new_string(val));
+    add_obj(key, json_object_new_string(val));
+}
+
+static inline json_t *
+get_obj(const char *key)
+{
+    return json_object_object_get(_root, key);
 }
 
 static json_t *
 contrive_date(json_t *body)
 {
+    json_t *date = json_object_new_object();
+
     json_t *actual = json_object_object_get(body, "dateSent");
     json_t *not_before = json_object_object_get(body, "dateSentNotBefore");
     json_t *not_after = json_object_object_get(body, "dateSentNotAfter");
 
-    json_t *date = json_object_new_object();
     if (actual) {
         json_object_object_add(date, "gte", json_object_get(actual));
         json_object_object_add(date, "lte", json_object_get(actual));
@@ -99,31 +118,32 @@ index_anno(json_t *body)
 
     for (int i = 0; i < NELEMS(fields); i++) {
         json_t *field = json_object_object_get(body, fields[i].path);
-        if (field) {
-            json_t *ref = json_object_get(field); // refcount++
-            json_object_object_add(_root, fields[i].key, ref);
-        }
+        if (field)
+            add_obj(fields[i].key, json_object_get(field));
     }
 
     json_t *date = contrive_date(body);
     if (date) {
-        json_object_object_add(_root, "date", date);
         json_t *gte = json_object_object_get(date, "gte");
         json_t *lte = json_object_object_get(date, "lte");
         if (gte)
-            json_object_object_add(_root, "dateSortable", json_object_get(gte));
+            add_obj("dateSortable", json_object_get(gte));
         else if (lte)
-            json_object_object_add(_root, "dateSortable", json_object_get(lte));
+            add_obj("dateSortable", json_object_get(lte));
+
+        add_obj("date", date);
     }
     else {
-        json_t *wingit = json_object_new_object();
-        json_object_object_add(wingit, "gte", json_object_new_string("0001"));
-        json_object_object_add(wingit, "lte", json_object_new_string("9999"));
-        json_object_object_add(_root, "date", wingit);
-
-        json_object_object_add(_root, "dateSortable", json_object_new_string("9999"));
-
         fprintf(stderr, "%s: no dateSent, winging it.\n", json_object_get_string(id));
+
+        // improvise: 0001 <= 'date' <= 9999
+        json_t *impr = json_object_new_object();
+        json_object_object_add(impr, "gte", json_object_new_string("0001"));
+        json_object_object_add(impr, "lte", json_object_new_string("9999"));
+        add_obj("date", impr);
+
+        // arbitrary 'sortable date' to come after items with proper (historical) date
+        add_str("dateSortable", "9999");
     }
 
 }
@@ -132,10 +152,10 @@ static void
 add_unique(const char *key, const char *candidate)
 {
     // Get or create and add items array
-    json_t *items = json_object_object_get(_root, key);
+    json_t *items = get_obj(key);
     if (!items) {
         items = json_object_new_array();
-        json_object_object_add(_root, key, items);
+        add_obj(key, items);
     }
 
     // Check if the candidate already exists
@@ -143,7 +163,7 @@ add_unique(const char *key, const char *candidate)
     int exists = 0;
     for (int i = 0; i < nitems; i++) {
         json_t *item = json_object_array_get_idx(items, i);
-        if (!strcmp(json_object_get_string(item), candidate)) {
+        if (streq(json_object_get_string(item), candidate)) {
             exists = 1;
             break;
         }
@@ -261,21 +281,19 @@ extract_text(const char *type, const char *source, int start, int end)
 static void
 store_text(json_t *anno, const char *text_type)
 {
-    json_t *texts;
-    if (!json_object_object_get_ex(_root, text_type, &texts)) {
+    json_t *texts = get_obj(text_type);
+    if (!texts) {
         texts = json_object_new_array();
-        json_object_object_add(_root, text_type, texts);
+        add_obj(text_type, texts);
     }
 
-    json_t *targets;
-    if (json_object_object_get_ex(anno, "target", &targets)
-            && json_object_get_type(targets) == json_type_array) {
+    json_t *targets = json_object_object_get(anno, "target");
+    if (targets && json_object_get_type(targets) == json_type_array) {
         int nitems = json_object_array_length(targets);
         for (int i = 0; i < nitems; i++) {
             json_t *target = json_object_array_get_idx(targets, i);
-            json_t *type;
-            if (json_object_object_get_ex(target, "type", &type)
-                    && !strcmp("NormalText", json_object_get_string(type))) {
+            json_t *type = json_object_object_get(target, "type");
+            if (type && streq("NormalText", json_object_get_string(type))) {
                 json_t *source, *selector, *start, *end;
                 if (json_object_object_get_ex(target, "source", &source)
                         && json_object_object_get_ex(target, "selector", &selector)
@@ -348,52 +366,52 @@ main(int argc, char *argv[])
 
             switch (body_type[0]) {
                 case 'D':
-                    if (!strcmp(body_type, "Document")) {
+                    if (streq(body_type, "Document")) {
                         add_str("type", "intro");
                         index_anno(body);
                     }
-                    else if (!strcmp(body_type, "Division")) {
+                    else if (streq(body_type, "Division")) {
                         json_t *tei_type = json_object_object_get(body, "tei:type");
                         if (tei_type) {
                             const char *s = json_object_get_string(tei_type);
-                            if (!strcmp(s, "original"))
+                            if (streq(s, "original"))
                                 store_text(anno, "letterOriginalText");
-                            else if (!strcmp(s, "translation"))
+                            else if (streq(s, "translation"))
                                 store_text(anno, "letterTranslatedText");
-                            else if (!strcmp(s, "about"))
+                            else if (streq(s, "about"))
                                 store_text(anno, "introText");
                         }
                     }
                     break;
 
                 case 'E':
-                    if (!strcmp(body_type, "Entity")) {
+                    if (streq(body_type, "Entity")) {
                         json_t *tei_type = json_object_object_get(body, "tei:type");
                         if (tei_type) {
                             const char *s = json_object_get_string(tei_type);
-                            if (!strcmp(s, "artwork"))
+                            if (streq(s, "artwork"))
                                 index_artwork(body);
-                            else if (!strcmp(s, "person"))
+                            else if (streq(s, "person"))
                                 index_person(body, anno_id);
                         }
                     }
                     break;
 
                 case 'L':
-                    if (!strcmp(body_type, "Letter")) {
+                    if (streq(body_type, "Letter")) {
                         add_str("type", "letter");
                         index_anno(body);
                     }
                     break;
 
                 case 'N':
-                    if (!strcmp(body_type, "Note")) {
+                    if (streq(body_type, "Note")) {
                         json_t *subtype = json_object_object_get(body, "subtype");
                         if (subtype) {
                             const char *s = json_object_get_string(subtype);
-                            if (!strcmp(s, "notes")
-                                    || !strcmp(s, "typednotes")
-                                    || !strcmp(s, "langnotes"))
+                            if (streq(s, "notes")
+                                    || streq(s, "typednotes")
+                                    || streq(s, "langnotes"))
                                 store_text(anno, "letterNotesText");
                         }
                     }
